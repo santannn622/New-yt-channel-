@@ -1,0 +1,16 @@
+# One topic per line. The bot uses the first line, then moves it to done.txt.
+How compound interest turns small money into big money
+Why inflation makes your savings worth less every year
+How banks actually make money from your deposits
+What a credit score is and how it really works
+Why the rich buy assets and the poor buy liabilities
+The 50/30/20 budgeting rule explained simply
+What an emergency fund is and why you need one
+How index funds work for beginners
+Why paying only the minimum on a credit card traps you
+The difference between saving and investing
+How taxes work: gross pay vs take-home pay
+What is a budget and why most budgets fail
+How debt snowball vs debt avalanche works
+Why starting to invest early beats investing more later
+How a mortgage works in plain English
