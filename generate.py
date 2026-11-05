@@ -19,7 +19,10 @@ import requests
 
 # ---------- settings (override with env vars) ----------
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# Google retires models often (2.5 was shut down Oct 2026). If one 404s,
+# the bot just tries the next. Update this list when needed.
+GEMINI_FALLBACKS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
 VOICE = os.environ.get("VOICE", "en-US-AndrewNeural")
 VOICE_RATE = os.environ.get("VOICE_RATE", "+5%")
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -88,10 +91,6 @@ def consume_topic(topic):
 def fetch_script(topic):
     if not GEMINI_API_KEY:
         sys.exit("GEMINI_API_KEY is not set.")
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    )
     body = {
         "contents": [{"parts": [{"text": PROMPT.format(topic=topic)}]}],
         "generationConfig": {
@@ -99,24 +98,38 @@ def fetch_script(topic):
             "temperature": 0.9,
         },
     }
+    models = []
+    for m in [GEMINI_MODEL] + GEMINI_FALLBACKS:
+        if m not in models:
+            models.append(m)
     last = None
-    for attempt in range(4):
-        try:
-            r = requests.post(url, json=body, timeout=90)
-            if r.status_code in (429, 500, 503):
-                raise RuntimeError(f"Gemini {r.status_code}")
-            r.raise_for_status()
-            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            text = re.sub(r"^```(?:json)?|```$", "", text.strip()).strip()
-            data = json.loads(text)
-            assert data["scenes"], "no scenes"
-            for s in data["scenes"]:
-                assert s["narration"] and s["image_prompt"]
-            return data
-        except Exception as e:  # noqa: BLE001
-            last = e
-            log(f"script attempt {attempt + 1} failed: {e}")
-            time.sleep(5 * (attempt + 1))
+    for model in models:
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={GEMINI_API_KEY}"
+        )
+        for attempt in range(3):
+            try:
+                r = requests.post(url, json=body, timeout=90)
+                if r.status_code == 404:
+                    last = f"{model}: 404 model not found"
+                    log(last, "- trying next model")
+                    break
+                if r.status_code in (429, 500, 503):
+                    raise RuntimeError(f"Gemini {r.status_code}: {r.text[:150]}")
+                r.raise_for_status()
+                text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                text = re.sub(r"^```(?:json)?|```$", "", text.strip()).strip()
+                data = json.loads(text)
+                assert data["scenes"], "no scenes"
+                for s in data["scenes"]:
+                    assert s["narration"] and s["image_prompt"]
+                log("script model:", model)
+                return data
+            except Exception as e:  # noqa: BLE001
+                last = e
+                log(f"{model} attempt {attempt + 1} failed: {e}")
+                time.sleep(5 * (attempt + 1))
     sys.exit(f"Could not get a script: {last}")
 
 
