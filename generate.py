@@ -5,6 +5,8 @@ topic -> script (Gemini) -> stickman images (Pollinations) -> voice (edge-tts)
       -> vertical video with zoom + captions (FFmpeg) -> Telegram / artifact
 """
 import asyncio
+import base64
+import io
 import json
 import os
 import random
@@ -27,6 +29,9 @@ VOICE = os.environ.get("VOICE", "en-US-AndrewNeural")
 VOICE_RATE = os.environ.get("VOICE_RATE", "+5%")
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
+CF_ACCOUNT = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+POLL_KEY = os.environ.get("POLLINATIONS_API_KEY", "")
 
 W, H, FPS = 1080, 1920, 30
 PAD = 0.3  # seconds of silence after each scene
@@ -108,7 +113,7 @@ def fetch_script(topic):
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={GEMINI_API_KEY}"
         )
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 r = requests.post(url, json=body, timeout=90)
                 if r.status_code == 404:
@@ -161,25 +166,78 @@ def fallback_card(text, path):
     img.save(path)
 
 
+class ProviderUnavailable(Exception):
+    """Out of credit / bad key: stop retrying this provider."""
+
+
+def fit_to_portrait(raw, path):
+    """Flux via Cloudflare returns a square. Put it on a 9:16 canvas whose
+    colour matches the image's own background so there is no visible seam."""
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(raw)).convert("RGB")
+    w, h = im.size
+    if h / w >= 1.6:
+        im.save(path)
+        return
+    strip = im.crop((0, 0, w, max(4, h // 50))).resize((1, 1), Image.BILINEAR)
+    bg = strip.getpixel((0, 0))
+    canvas = Image.new("RGB", (W, H), bg)
+    sq = im.resize((W, int(W * h / w)))
+    canvas.paste(sq, (0, int((H - sq.height) * 0.25)))
+    canvas.save(path)
+
+
+def cloudflare_image(prompt, seed):
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}"
+        "/ai/run/@cf/black-forest-labs/flux-1-schnell"
+    )
+    r = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {CF_TOKEN}"},
+        json={"prompt": prompt, "steps": 4},
+        timeout=120,
+    )
+    if r.status_code in (401, 402, 403):
+        raise ProviderUnavailable(f"cloudflare {r.status_code}: {r.text[:200]}")
+    r.raise_for_status()
+    return base64.b64decode(r.json()["result"]["image"])
+
+
+def pollinations_image(prompt, seed):
+    q = urllib.parse.quote(prompt)
+    if POLL_KEY:
+        url = f"https://gen.pollinations.ai/image/{q}?model=flux&width=576&height=1024&seed={seed}"
+        headers = {"Authorization": f"Bearer {POLL_KEY}"}
+    else:
+        url = f"https://image.pollinations.ai/prompt/{q}?width=576&height=1024&nologo=true&model=flux&seed={seed}"
+        headers = {}
+    r = requests.get(url, headers=headers, timeout=120)
+    if r.status_code in (401, 402, 403):
+        raise ProviderUnavailable(f"pollinations {r.status_code}")
+    if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image"):
+        raise RuntimeError(f"pollinations status {r.status_code}")
+    return r.content
+
+
 def make_image(prompt, path, seed):
     full = STYLE + prompt
-    url = (
-        "https://image.pollinations.ai/prompt/"
-        + urllib.parse.quote(full)
-        + f"?width=576&height=1024&nologo=true&model=flux&seed={seed}"
-    )
-    for attempt in range(4):
-        try:
-            r = requests.get(url, timeout=120)
-            if r.status_code == 200 and r.headers.get("content-type", "").startswith(
-                "image"
-            ):
-                path.write_bytes(r.content)
+    providers = []
+    if CF_ACCOUNT and CF_TOKEN:
+        providers.append(("cloudflare", cloudflare_image))
+    providers.append(("pollinations", pollinations_image))
+    for name, fn in providers:
+        for attempt in range(3):
+            try:
+                fit_to_portrait(fn(full, seed), path)
                 return
-            raise RuntimeError(f"status {r.status_code}")
-        except Exception as e:  # noqa: BLE001
-            log(f"image attempt {attempt + 1} failed: {e}")
-            time.sleep(8 * (attempt + 1))
+            except ProviderUnavailable as e:
+                log(f"{name} unavailable: {e}")
+                break
+            except Exception as e:  # noqa: BLE001
+                log(f"{name} attempt {attempt + 1} failed: {e}")
+                time.sleep(4 * (attempt + 1))
     log("using fallback card for:", prompt[:50])
     fallback_card(prompt, path)
 
