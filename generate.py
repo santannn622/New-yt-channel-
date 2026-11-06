@@ -243,20 +243,51 @@ def make_image(prompt, path, seed):
 
 
 # ---------- 4. voice ----------
-def make_voice(text, path):
+def clean_for_tts(t):
+    """Strip characters that make the voice service choke."""
+    t = (t.replace("\u2019", "'").replace("\u2018", "'")
+          .replace("\u201c", '"').replace("\u201d", '"')
+          .replace("\u2014", ", ").replace("\u2013", " to "))
+    t = t.replace("&", " and ").replace("%", " percent")
+    t = re.sub(r"[*_#`~<>\[\]{}|\\^=+]", " ", t)
+    t = re.sub(r"[^\x20-\x7E]", " ", t)  # emoji, odd symbols
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def tts_edge(text, path, rate):
     import edge_tts
 
     async def run():
-        await edge_tts.Communicate(text, VOICE, rate=VOICE_RATE).save(str(path))
+        kw = {"rate": rate} if rate else {}
+        await edge_tts.Communicate(text, VOICE, **kw).save(str(path))
 
-    for attempt in range(3):
+    asyncio.run(run())
+
+
+def tts_gtts(text, path):
+    from gtts import gTTS
+
+    gTTS(text, lang="en", tld="com").save(str(path))
+
+
+def make_voice(text, path):
+    text = clean_for_tts(text)
+    plans = [("edge", VOICE_RATE), ("edge", ""), ("edge", ""), ("gtts", None), ("gtts", None)]
+    for i, (engine, rate) in enumerate(plans):
         try:
-            asyncio.run(run())
+            if path.exists():
+                path.unlink()
+            if engine == "edge":
+                tts_edge(text, path, rate)
+            else:
+                tts_gtts(text, path)
             if path.exists() and path.stat().st_size > 1000:
+                if engine == "gtts":
+                    log("voice: used gTTS fallback")
                 return
         except Exception as e:  # noqa: BLE001
-            log(f"tts attempt {attempt + 1} failed: {e}")
-            time.sleep(4)
+            log(f"tts attempt {i + 1} ({engine}) failed: {e}")
+        time.sleep(3 * (i + 1))
     sys.exit("Text-to-speech failed.")
 
 
@@ -404,6 +435,7 @@ def main():
         clips.append(clip)
         durs.append((adur, cdur))
         log(f"scene {i + 1}/{len(scenes)} ok ({adur:.1f}s)")
+        time.sleep(1.5)
 
     total = sum(c for _, c in durs)
     log(f"total length: {total:.1f}s")
