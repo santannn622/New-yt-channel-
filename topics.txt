@@ -1,5 +1,4 @@
 # One topic per line. The bot uses the first line, then moves it to done.txt.
-How compound interest turns small money into big money
 Why inflation makes your savings worth less every year
 How banks actually make money from your deposits
 What a credit score is and how it really works
