@@ -1,3 +1,4 @@
 requests
 edge-tts
 pillow
+gtts
