@@ -1,5 +1,4 @@
 # One topic per line. The bot uses the first line, then moves it to done.txt.
-Why the rich buy assets and the poor buy liabilities
 The 50/30/20 budgeting rule explained simply
 What an emergency fund is and why you need one
 How index funds work for beginners
