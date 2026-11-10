@@ -1,5 +1,4 @@
 # One topic per line. The bot uses the first line, then moves it to done.txt.
-What is a budget and why most budgets fail
 How debt snowball vs debt avalanche works
 Why starting to invest early beats investing more later
 How a mortgage works in plain English
