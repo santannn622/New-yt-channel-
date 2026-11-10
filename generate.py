@@ -32,6 +32,8 @@ TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 CF_ACCOUNT = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
 CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
 POLL_KEY = os.environ.get("POLLINATIONS_API_KEY", "")
+CF_VOICE = os.environ.get("CF_VOICE", "arcas")  # works for Aura 1 and 2
+CHANNEL_NAME = os.environ.get("CHANNEL_NAME", "")
 
 W, H, FPS = 1080, 1920, 30
 PAD = 0.3  # seconds of silence after each scene
@@ -39,34 +41,62 @@ OUT = Path("output")
 WORK = OUT / "work"
 
 # This prefix is what makes every image look like the same channel.
+# "Stick" is the recurring mascot, so viewers recognise the channel instantly.
 STYLE = (
-    "simple minimalist stick figure drawing, thick black outlines, "
-    "round white head with dot eyes, plain off-white background, "
-    "flat pastel colors, clean vector doodle style, no text, no words, "
+    "Hand-drawn doodle illustration, one consistent style: a simple stick figure "
+    "character named Stick with a big round white head, two black dot eyes, a small "
+    "smile, thin black limbs and a small green necktie. Thick black marker outlines, "
+    "flat pastel colors with green and gold accents for money, plain warm off-white "
+    "background, lots of empty space, centered composition, no text, no letters, "
+    "no numbers, no watermark. Scene: "
 )
 
-PROMPT = """You write scripts for a faceless YouTube Shorts channel that explains
-personal finance with stick-figure cartoons.
+# One emotional angle per video (viewers watch for a feeling, not just facts).
+ANGLES = [
+    ("fear of staying broke", "Open with a stakes-raising hook that makes the viewer worry about their own money, then give relief with one simple fix."),
+    ("curiosity", "Open with a surprising fact or open loop the viewer must see resolved."),
+    ("anger at being played", "Open by exposing how money systems quietly take a cut, then show how to fight back. Stay strictly factual, no conspiracy claims."),
+    ("hope and freedom", "Open with an inspiring 'what if' about financial freedom, then give the realistic first step."),
+    ("relief", "Open by naming a money mistake everyone feels guilty about, then reassure them it is fixable."),
+]
+
+DRAFT_PROMPT = """You write viral YouTube Shorts scripts for a faceless channel that explains
+personal finance with stick-figure cartoons. The recurring mascot is "Stick".
 
 Topic: {topic}
+Emotional angle: {angle} - {angle_note}
 
 Rules:
-- Total narration 105-125 words (about 45 seconds spoken).
-- First scene is a punchy hook that makes people stay.
+- Goldilocks length: 90-110 words total narration (about 40 seconds). Not rushed, not padded.
+- Goldilocks depth: ONE idea only, explained so a smart 16-year-old gets it instantly,
+  but with one concrete example using simple numbers (e.g. "$100 a month at 7% a year").
+  Only use numbers you are sure are correct.
+- Scene 1 is the hook: max 12 words, makes the viewer need the next sentence.
+- Sound like a friend talking: contractions, short sentences, no jargon, no filler.
 - Educational only. No investment advice, no "buy X", no guaranteed returns.
-- Plain, friendly words. Short sentences. One idea per scene.
-- 8 scenes. Last scene is a quick takeaway line.
-- For each scene write an image_prompt describing ONLY what the stick figure
-  scene shows (action, props like coins, bank, chart, piggy bank, house).
-  Vary the scene each time. Do not mention style or text in the image.
+- Exactly 10 scenes, about 9-11 words each. One beat per scene.
+- Final scene: {ending}
+- For each scene write image_prompt: what Stick is doing, with props (coins, bank, piggy
+  bank, chart, house, credit card, clock). A different visual metaphor every scene,
+  mix close-ups and wide shots. Max 30 words. Never mention text or style.
 
-Return ONLY JSON in this shape:
+Return ONLY JSON in exactly this shape:
 {{
-  "title": "catchy title under 70 chars",
-  "description": "1-2 sentence description with 3 hashtags including #shorts",
+  "title": "curiosity-driven title under 60 chars",
+  "description": "1-2 sentence description ending with 3 hashtags including #shorts",
   "scenes": [{{"narration": "...", "image_prompt": "..."}}]
 }}"""
 
+POLISH_PROMPT = """You are a ruthless editor of viral YouTube Shorts scripts. Improve this draft.
+1. Sharpen the hook: first sentence max 12 words, impossible to scroll past.
+2. Cut filler. Every line must earn its place. Keep it conversational.
+3. Check every number and calculation. If unsure, replace with a clearly-labelled simple example.
+4. Keep exactly 10 scenes, 90-110 words total, same JSON shape, Stick as the mascot in image prompts.
+5. Keep the final scene's ending (teaser or question) intact.
+Return ONLY the improved JSON.
+
+Draft:
+{draft}"""
 
 def log(*a):
     print(*a, flush=True)
@@ -75,13 +105,15 @@ def log(*a):
 # ---------- 1. topic ----------
 def pick_topic():
     forced = os.environ.get("TOPIC", "").strip()
+    lines = [
+        l.strip() for l in Path("topics.txt").read_text().splitlines()
+        if l.strip() and not l.strip().startswith("#")
+    ]
     if forced:
-        return forced, False
-    for line in Path("topics.txt").read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            return line, True
-    sys.exit("topics.txt is empty - add more topics.")
+        return forced, False, (lines[0] if lines else "")
+    if not lines:
+        sys.exit("topics.txt is empty - add more topics.")
+    return lines[0], True, (lines[1] if len(lines) > 1 else "")
 
 
 def consume_topic(topic):
@@ -93,14 +125,14 @@ def consume_topic(topic):
 
 
 # ---------- 2. script ----------
-def fetch_script(topic):
+def call_gemini(prompt, temperature=0.9):
     if not GEMINI_API_KEY:
         sys.exit("GEMINI_API_KEY is not set.")
     body = {
-        "contents": [{"parts": [{"text": PROMPT.format(topic=topic)}]}],
+        "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "temperature": 0.9,
+            "temperature": temperature,
         },
     }
     models = []
@@ -127,15 +159,53 @@ def fetch_script(topic):
                 text = re.sub(r"^```(?:json)?|```$", "", text.strip()).strip()
                 data = json.loads(text)
                 assert data["scenes"], "no scenes"
-                for s in data["scenes"]:
-                    assert s["narration"] and s["image_prompt"]
+                for sc in data["scenes"]:
+                    assert sc["narration"] and sc["image_prompt"]
                 log("script model:", model)
                 return data
             except Exception as e:  # noqa: BLE001
                 last = e
                 log(f"{model} attempt {attempt + 1} failed: {e}")
                 time.sleep(5 * (attempt + 1))
-    sys.exit(f"Could not get a script: {last}")
+    raise RuntimeError(f"Gemini failed: {last}")
+
+
+def word_count(d):
+    return sum(len(sc["narration"].split()) for sc in d["scenes"])
+
+
+def fetch_script(topic, next_topic=""):
+    angle, note = random.choice(ANGLES)
+    if next_topic:
+        ending = (
+            "a one-line teaser for the next video (topic: "
+            f"{next_topic}) that makes them follow so they don't miss it."
+        )
+    else:
+        ending = "a short takeaway, then ask viewers one question they will want to answer in the comments."
+    prompt = DRAFT_PROMPT.format(topic=topic, angle=angle, angle_note=note, ending=ending)
+    try:
+        draft = call_gemini(prompt)
+    except RuntimeError as e:
+        sys.exit(f"Could not get a script: {e}")
+    log(f"angle: {angle} | draft words: {word_count(draft)}")
+    # Second pass: an editor sharpens hook, trims filler, checks the numbers.
+    try:
+        better = call_gemini(POLISH_PROMPT.format(draft=json.dumps(draft)), 0.6)
+        wc = word_count(better)
+        if len(better["scenes"]) >= 8 and 70 <= wc <= 130:
+            log(f"using polished script ({wc} words)")
+            draft = better
+        else:
+            log(f"polish rejected (scenes={len(better['scenes'])}, words={wc}); keeping draft")
+    except Exception as e:  # noqa: BLE001
+        log("polish step skipped:", e)
+    if CHANNEL_NAME:
+        draft["description"] = (
+            draft.get("description", "")
+            + f"\n\nNew money lesson every day on {CHANNEL_NAME}."
+        )
+    return draft
 
 
 # ---------- 3. images ----------
@@ -196,7 +266,7 @@ def cloudflare_image(prompt, seed):
     r = requests.post(
         url,
         headers={"Authorization": f"Bearer {CF_TOKEN}"},
-        json={"prompt": prompt, "steps": 4},
+        json={"prompt": prompt, "steps": 8},
         timeout=120,
     )
     if r.status_code in (401, 402, 403):
@@ -270,24 +340,55 @@ def tts_gtts(text, path):
     gTTS(text, lang="en", tld="com").save(str(path))
 
 
+def tts_cloudflare(text, path, model):
+    """Deepgram Aura via Cloudflare: far more natural than the free robotic voices."""
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/run/{model}"
+    )
+    r = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {CF_TOKEN}"},
+        json={"text": text, "speaker": CF_VOICE, "encoding": "mp3"},
+        timeout=120,
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(f"cloudflare tts {r.status_code}: {r.text[:200]}")
+    ct = r.headers.get("content-type", "")
+    if "json" in ct:
+        res = r.json().get("result") or {}
+        b64 = res.get("audio") if isinstance(res, dict) else None
+        if not b64:
+            raise RuntimeError("cloudflare tts: no audio in JSON reply")
+        path.write_bytes(base64.b64decode(b64))
+    else:
+        path.write_bytes(r.content)
+    if duration(path) < 0.5:
+        raise RuntimeError("cloudflare tts: audio too short/invalid")
+
+
 def make_voice(text, path):
     text = clean_for_tts(text)
-    plans = [("edge", VOICE_RATE), ("edge", ""), ("edge", ""), ("gtts", None), ("gtts", None)]
-    for i, (engine, rate) in enumerate(plans):
+    plans = []
+    if CF_ACCOUNT and CF_TOKEN:
+        plans += [("cf", "@cf/deepgram/aura-2-en"), ("cf", "@cf/deepgram/aura-1")]
+    plans += [("edge", VOICE_RATE), ("edge", ""), ("gtts", None)]
+    for i, (engine, arg) in enumerate(plans):
         try:
             if path.exists():
                 path.unlink()
-            if engine == "edge":
-                tts_edge(text, path, rate)
+            if engine == "cf":
+                tts_cloudflare(text, path, arg)
+            elif engine == "edge":
+                tts_edge(text, path, arg)
             else:
                 tts_gtts(text, path)
             if path.exists() and path.stat().st_size > 1000:
-                if engine == "gtts":
-                    log("voice: used gTTS fallback")
+                if engine != "cf":
+                    log(f"voice: used {engine} fallback")
                 return
         except Exception as e:  # noqa: BLE001
             log(f"tts attempt {i + 1} ({engine}) failed: {e}")
-        time.sleep(3 * (i + 1))
+        time.sleep(2 * (i + 1))
     sys.exit("Text-to-speech failed.")
 
 
@@ -414,10 +515,10 @@ def send_telegram(video, caption):
 def main():
     OUT.mkdir(exist_ok=True)
     WORK.mkdir(exist_ok=True)
-    topic, consume = pick_topic()
+    topic, consume, next_topic = pick_topic()
     log("topic:", topic)
 
-    data = fetch_script(topic)
+    data = fetch_script(topic, next_topic)
     scenes = data["scenes"]
     log("title:", data["title"], "| scenes:", len(scenes))
 
