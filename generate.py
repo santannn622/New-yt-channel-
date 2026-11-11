@@ -530,8 +530,12 @@ def send_telegram(video, caption):
 
 def upload_to_cloudinary(video_path: Path) -> str:
     """Uploads local generated video to Cloudinary to generate a public URL for Buffer."""
+    log(f"DEBUG: CLOUDINARY_CLOUD_NAME present? {bool(CLOUDINARY_CLOUD_NAME)}")
+    log(f"DEBUG: CLOUDINARY_API_KEY present? {bool(CLOUDINARY_API_KEY)}")
+    log(f"DEBUG: CLOUDINARY_API_SECRET present? {bool(CLOUDINARY_API_SECRET)}")
+
     if not (CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET):
-        log("Cloudinary not configured. Skipping upload.")
+        log("Cloudinary credentials missing or incomplete. Skipping upload.")
         return ""
     try:
         log("Uploading video to Cloudinary...")
@@ -540,7 +544,7 @@ def upload_to_cloudinary(video_path: Path) -> str:
         log("Cloudinary upload successful:", url)
         return url
     except Exception as e:
-        log("Cloudinary upload failed:", e)
+        log("Cloudinary upload failed with error:", e)
         return ""
 
 
@@ -563,7 +567,9 @@ def get_social_channel_ids(buffer_token: str) -> list:
     """
     try:
         r = requests.post(url, json={"query": org_query}, headers=headers, timeout=30)
-        orgs = r.json().get("data", {}).get("account", {}).get("organizations", [])
+        data = r.json()
+        log(f"DEBUG: Buffer Account response: {data}")
+        orgs = data.get("data", {}).get("account", {}).get("organizations", [])
         if not orgs:
             log("No Buffer organization found.")
             return []
@@ -585,7 +591,9 @@ def get_social_channel_ids(buffer_token: str) -> list:
             headers=headers, 
             timeout=30
         )
-        channels = r.json().get("data", {}).get("channels", [])
+        chan_data = r.json()
+        log(f"DEBUG: Buffer Channels response: {chan_data}")
+        channels = chan_data.get("data", {}).get("channels", [])
         
         target_services = {"tiktok", "instagram", "youtube"}
         matched_channel_ids = []
@@ -604,6 +612,7 @@ def get_social_channel_ids(buffer_token: str) -> list:
 
 def publish_to_buffer_multi(video_url: str, caption: str):
     """Sends the generated video URL and caption to Buffer for all connected channels."""
+    log(f"DEBUG: BUFFER_ACCESS_TOKEN present? {bool(BUFFER_ACCESS_TOKEN)}")
     if not BUFFER_ACCESS_TOKEN:
         log("BUFFER_ACCESS_TOKEN not set. Skipping Buffer.")
         return
@@ -652,6 +661,7 @@ def publish_to_buffer_multi(video_url: str, caption: str):
         try:
             r = requests.post(url, json={"query": query, "variables": variables}, headers=headers, timeout=30)
             res = r.json()
+            log(f"DEBUG: Buffer CreatePost response for {cid}: {res}")
             if "errors" in res or res.get("data", {}).get("createPost", {}).get("userErrors"):
                 log(f"Failed to post to channel {cid}:", res)
             else:
