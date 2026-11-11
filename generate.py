@@ -2,7 +2,7 @@
 """Stickman finance Shorts bot.
 
 topic -> script (Gemini) -> stickman images (Pollinations) -> voice (edge-tts)
-      -> vertical video with zoom + captions (FFmpeg) -> Telegram / Buffer (TikTok)
+      -> vertical video with zoom + captions (FFmpeg) -> Telegram / Cloudinary / Buffer (TikTok)
 """
 import asyncio
 import base64
@@ -17,6 +17,8 @@ import time
 import urllib.parse
 from pathlib import Path
 
+import cloudinary
+import cloudinary.uploader
 import requests
 
 # ---------- settings (override with env vars) ----------
@@ -38,7 +40,18 @@ CHANNEL_NAME = os.environ.get("CHANNEL_NAME", "")
 # Buffer integration settings
 BUFFER_ACCESS_TOKEN = os.environ.get("BUFFER_ACCESS_TOKEN", "")
 BUFFER_TIKTOK_CHANNEL_ID = os.environ.get("BUFFER_TIKTOK_CHANNEL_ID", "")
-VIDEO_PUBLIC_URL = os.environ.get("VIDEO_PUBLIC_URL", "")
+
+# Cloudinary credentials (for automatic video URL hosting)
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
+CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY", "")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET", "")
+
+if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET,
+    )
 
 W, H, FPS = 1080, 1920, 30
 PAD = 0.3  # seconds of silence after each scene
@@ -58,58 +71,4 @@ STYLE = (
 
 # One emotional angle per video (viewers watch for a feeling, not just facts).
 ANGLES = [
-    ("fear of staying broke", "Open with a stakes-raising hook that makes the viewer worry about their own money, then give relief with one simple fix."),
-    ("curiosity", "Open with a surprising fact or open loop the viewer must see resolved."),
-    ("anger at being played", "Open by exposing how money systems quietly take a cut, then show how to fight back. Stay strictly factual, no conspiracy claims."),
-    ("hope and freedom", "Open with an inspiring 'what if' about financial freedom, then give the realistic first step."),
-    ("relief", "Open by naming a money mistake everyone feels guilty about, then reassure them it is fixable."),
-]
-
-DRAFT_PROMPT = """You write viral YouTube Shorts scripts for a faceless channel that explains
-personal finance with stick-figure cartoons. The recurring mascot is "Stick".
-
-Topic: {topic}
-Emotional angle: {angle} - {angle_note}
-
-Rules:
-- Goldilocks length: 90-110 words total narration (about 40 seconds). Not rushed, not padded.
-- Goldilocks depth: ONE idea only, explained so a smart 16-year-old gets it instantly,
-  but with one concrete example using simple numbers (e.g. "$100 a month at 7% a year").
-  Only use numbers you are sure are correct.
-- Scene 1 is the hook: max 12 words, makes the viewer need the next sentence.
-- Sound like a friend talking: contractions, short sentences, no jargon, no filler.
-- Educational only. No investment advice, no "buy X", no guaranteed returns.
-- Exactly 10 scenes, about 9-11 words each. One beat per scene.
-- Final scene: {ending}
-- For each scene write image_prompt: what Stick is doing, with props (coins, bank, piggy
-  bank, chart, house, credit card, clock). A different visual metaphor every scene,
-  mix close-ups and wide shots. Max 30 words. Never mention text or style.
-
-Return ONLY JSON in exactly this shape:
-{{
-  "title": "curiosity-driven title under 60 chars",
-  "description": "1-2 sentence description ending with 3 hashtags including #shorts",
-  "scenes": [{{"narration": "...", "image_prompt": "..."}}]
-}}"""
-
-POLISH_PROMPT = """You are a ruthless editor of viral YouTube Shorts scripts. Improve this draft.
-1. Sharpen the hook: first sentence max 12 words, impossible to scroll past.
-2. Cut filler. Every line must earn its place. Keep it conversational.
-3. Check every number and calculation. If unsure, replace with a clearly-labelled simple example.
-4. Keep exactly 10 scenes, 90-110 words total, same JSON shape, Stick as the mascot in image prompts.
-5. Keep the final scene's ending (teaser or question) intact.
-Return ONLY the improved JSON.
-
-Draft:
-{draft}"""
-
-def log(*a):
-    print(*a, flush=True)
-
-
-# ---------- 1. topic ----------
-def pick_topic():
-    forced = os.environ.get("TOPIC", "").strip()
-    lines = [
-        l.strip() for l in Path("topics.txt").read_text().splitlines()
-        if l
+    
